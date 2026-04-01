@@ -1,6 +1,5 @@
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers } = require('@whiskeysockets/baileys');
 const fs = require('fs');
-const axios = require('axios');
 const pino = require('pino');
 const readline = require('readline');
 
@@ -105,18 +104,6 @@ async function startBot(phoneNumber) {
         console.log('║         ✅ BOT CONECTADO COM SUCESSO! ✅        ║');
         console.log('╚══════════════════════════════════════════════════╝\n');
         console.log(`👤 Conectado: +${formattedNumber}\n`);
-
-        // 📸 Atualizar foto
-        (async () => {
-          try {
-            const imageUrl = 'https://images.wallpapersden.com/image/wxl-kenpachi-zaraki-4k-anime_68076.jpg';
-            const response = await axios.get(imageUrl, { responseType: 'arrayBuffer', timeout: 10000 });
-            await sock.updateProfilePicture(sock.user.id, response.data);
-            console.log('✅ Foto de perfil atualizada!\n');
-          } catch (error) {
-            // silencioso
-          }
-        })();
 
         rl.close();
       }
