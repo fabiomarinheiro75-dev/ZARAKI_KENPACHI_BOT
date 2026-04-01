@@ -2,6 +2,7 @@ const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = requi
 const fs = require('fs');
 const axios = require('axios');
 const pino = require('pino');
+const qrcode = require('qrcode-terminal');
 
 const logger = pino({ transport: { target: 'pino-pretty', options: { colorize: true } } });
 
@@ -21,17 +22,20 @@ async function startBot() {
     auth: state,
     browser: ["ZARAKI_ADM", "Chrome", "1.0"],
     logger: pino({ level: 'silent' }),
-    printQRInTerminal: true,
     generateHighQualityLinkPreview: true
   });
 
   sock.ev.on('creds.update', saveCreds);
+  
+  // Rastrear se o QR code foi exibido para evitar duplicatas
+  let qrDisplayed = false;
 
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;
     
-    // 📱 Exibir código de pareamento
-    if (qr) {
+    // 📱 Renderizar QR code automaticamente
+    if (qr && !qrDisplayed) {
+      qrDisplayed = true;
       console.log('\n');
       console.log('╔══════════════════════════════════════════════════╗');
       console.log('║                                                  ║');
@@ -40,18 +44,24 @@ async function startBot() {
       console.log('║  1️⃣  Abra WhatsApp no seu celular               ║');
       console.log('║  2️⃣  Vá em: Configurações > Dispositivos...    ║');
       console.log('║  3️⃣  Toque em "Vincular um dispositivo"         ║');
-      console.log('║  4️⃣  Aponte a câmera para o código acima        ║');
+      console.log('║  4️⃣  Aponte a câmera para o código abaixo       ║');
       console.log('║                                                  ║');
       console.log('╚══════════════════════════════════════════════════╝');
       console.log('\n');
+      
+      // Renderizar QR code no terminal
+      qrcode.generate(qr, { small: true });
     }
     
     if (connection === 'close') {
+      qrDisplayed = false; // Reset para exibir QR na próxima vez
       const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-      console.log('🔴 Conexão fechada. Razão:', lastDisconnect?.error?.output?.statusCode);
+      console.log('\n🔴 Conexão fechada.');
       if (shouldReconnect) {
-        console.log('⏳ Reconectando em 3 segundos...\n');
-        setTimeout(() => { startBot(); }, 3000);
+        console.log('⏳ Reconectando em 5 segundos...\n');
+        setTimeout(() => { startBot(); }, 5000);
+      } else {
+        console.log('❌ Desconectado permanentemente. Execute novamente para fazer login.\n');
       }
     } else if (connection === 'open') {
       console.log('\n');
