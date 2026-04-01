@@ -60,7 +60,7 @@ async function checkCard(cardNumber, month, year, cvv) {
 // 🎌 Função para pesquisar animes
 async function searchAnime(query) {
   return new Promise((resolve) => {
-    const url = `https://api.jikan.moe/v4/anime?query=${encodeURIComponent(query)}&limit=1`;
+    const url = `https://api.jikan.moe/v4/anime?query=${encodeURIComponent(query)}&limit=25`;
     
     https.get(url, (res) => {
       let data = '';
@@ -71,7 +71,22 @@ async function searchAnime(query) {
         try {
           const result = JSON.parse(data);
           if (result.data && result.data.length > 0) {
-            resolve(result.data[0]);
+            // Procura pelo anime que melhor corresponde ao nome buscado (case-insensitive)
+            const queryLower = query.toLowerCase();
+            let best = result.data[0];
+            
+            for (const anime of result.data) {
+              const titleLower = (anime.title || '').toLowerCase();
+              const titleEnLower = (anime.title_english || '').toLowerCase();
+              
+              // Se encontrar correspondência exata, usa esse
+              if (titleLower.includes(queryLower) || titleEnLower.includes(queryLower)) {
+                best = anime;
+                break;
+              }
+            }
+            
+            resolve(best);
           } else {
             resolve({ error: 'Anime não encontrado' });
           }
