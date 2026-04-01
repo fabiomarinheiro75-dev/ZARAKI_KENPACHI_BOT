@@ -6,13 +6,22 @@ const readline = require('readline');
 // Suprimir logs do Baileys
 const logger = pino({ level: 'fatal' });
 
-let db = {};
+// Estrutura padrão do DB
+let db = { divulgacao: null, grupos: {} };
 if (fs.existsSync('./database/db.json')) {
-  db = JSON.parse(fs.readFileSync('./database/db.json'));
+  const loaded = JSON.parse(fs.readFileSync('./database/db.json'));
+  db = { ...db, ...loaded };
 }
 
 function saveDB() {
   fs.writeFileSync('./database/db.json', JSON.stringify(db, null, 2));
+}
+
+// Inicializar grupo com valores padrão
+function initializeGroup(groupId) {
+  if (!db.grupos[groupId]) {
+    db.grupos[groupId] = { antilink: true, warns: {} };
+  }
 }
 
 // Ler entrada do usuário
@@ -21,8 +30,16 @@ const rl = readline.createInterface({
   output: process.stdout
 });
 
+// Proteger contra recursão infinita
+let maxRetries = 0;
 function askPhoneNumber() {
   return new Promise((resolve) => {
+    maxRetries++;
+    if (maxRetries > 10) {
+      console.error('\n❌ Muitas tentativas. Encerrando.\n');
+      process.exit(1);
+    }
+    
     console.clear();
     console.log('\n╔══════════════════════════════════════════════════╗');
     console.log('║           🤖 ZARAKI ADM BOT LOGIN 🤖            ║');
@@ -40,6 +57,7 @@ function askPhoneNumber() {
         console.log('\n❌ Número inválido! Formato: 55[DDD][9]NÚMERO.\n');
         setTimeout(() => askPhoneNumber().then(resolve), 1000);
       } else {
+        maxRetries = 0; // Reset
         resolve(numero);
       }
     });
@@ -66,7 +84,13 @@ async function startBot(phoneNumber) {
       printQRInTerminal: false,
     });
 
-    sock.ev.on('creds.update', saveCreds);
+    sock.ev.on('creds.update', () => {
+      try {
+        saveCreds();
+      } catch (error) {
+        console.error(`❌ Erro ao salvar credenciais: ${error.message}`);
+      }
+    });
     
     let qrDisplayed = false;
     let reconnectAttempts = 0;
@@ -104,8 +128,7 @@ async function startBot(phoneNumber) {
         console.log('║         ✅ BOT CONECTADO COM SUCESSO! ✅        ║');
         console.log('╚══════════════════════════════════════════════════╝\n');
         console.log(`👤 Conectado: +${formattedNumber}\n`);
-
-        rl.close();
+        console.log('📢 Pronto para receber comandos nos grupos...\n');
       }
       
       // Desconectado
@@ -169,23 +192,30 @@ async function startBot(phoneNumber) {
         const admins = metadata.participants.filter(p => p.admin !== null).map(p => p.id);
         const isAdmin = admins.includes(sender);
 
-        if (!db[from]) {
-          db[from] = { antilink: true, warns: {} };
-        }
+        initializeGroup(from);
+        const groupData = db.grupos[from];
 
         // 🚫 ANTI-LINK
         const isLink = /(https?:\/\/|chat\.whatsapp\.com|t\.me|telegram\.me)/gi.test(text);
-        if (db[from].antilink && isLink && !isAdmin) {
+        if (groupData.antilink && isLink && !isAdmin) {
           try {
-            await sock.sendMessage(from, { delete: msg.key });
-            if (!db[from].warns[sender]) db[from].warns[sender] = 0;
-            db[from].warns[sender]++;
-            await sock.sendMessage(from, { text: `⚠️ Aviso ${db[from].warns[sender]}/2` });
-            if (db[from].warns[sender] >= 2) {
+            try {
+              await sock.sendMessage(from, { delete: msg.key });
+            } catch (deleteError) {}
+            
+            if (!groupData.warns[sender]) groupData.warns[sender] = 0;
+            groupData.warns[sender]++;
+            await sock.sendMessage(from, { text: `⚠️ Aviso ${groupData.warns[sender]}/2 - Proibido links` });
+            
+            if (groupData.warns[sender] >= 2) {
               await sock.groupParticipantsUpdate(from, [sender], "remove");
+              delete groupData.warns[sender];
+              await sock.sendMessage(from, { text: `🔴 Removido por spam de links` });
             }
             saveDB();
-          } catch (error) {}
+          } catch (error) {
+            console.error(`Erro anti-link: ${error.message}`);
+          }
           return;
         }
 
@@ -216,7 +246,19 @@ async function startBot(phoneNumber) {
             if (user) await sock.groupParticipantsUpdate(from, [user], "remove");
             break;
           case "add":
-            if (args[0]) await sock.groupParticipantsUpdate(from, [args[0] + "@s.whatsapp.net"], "add");
+            if (args[0]) {
+              const numero = args[0].replace(/\D/g, '');
+              if (numero.length >= 10 && numero.length <= 15) {
+                try {
+                  await sock.groupParticipantsUpdate(from, [numero + "@s.whatsapp.net"], "add");
+                  await sock.sendMessage(from, { text: `✅ ${numero} adicionado` });
+                } catch (error) {
+                  await sock.sendMessage(from, { text: `❌ Erro ao adicionar` });
+                }
+              } else {
+                await sock.sendMessage(from, { text: `❌ Número inválido. Use: .add 5511999999999` });
+              }
+            }
             break;
           case "promote":
             let p = msg.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0];
@@ -227,38 +269,58 @@ async function startBot(phoneNumber) {
             if (d) await sock.groupParticipantsUpdate(from, [d], "demote");
             break;
           case "antilink":
-            if (args[0] === "on") db[from].antilink = true;
-            if (args[0] === "off") db[from].antilink = false;
-            await sock.sendMessage(from, { text: "🔗 Antilink: " + (db[from].antilink ? "✅" : "❌") });
+            if (args[0] === "on") groupData.antilink = true;
+            if (args[0] === "off") groupData.antilink = false;
+            if (!args[0]) {
+              await sock.sendMessage(from, { text: `🔗 Antilink: ${groupData.antilink ? "✅ ATIVO" : "❌ INATIVO"}\nUse: .antilink on/off` });
+              break;
+            }
+            await sock.sendMessage(from, { text: "🔗 Antilink: " + (groupData.antilink ? "✅ ATIVADO" : "❌ DESATIVADO") });
             saveDB();
             break;
           case "warn":
             let w = msg.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0];
             if (w) {
-              if (!db[from].warns[w]) db[from].warns[w] = 0;
-              db[from].warns[w]++;
-              await sock.sendMessage(from, { text: `⚠️ Aviso: ${db[from].warns[w]}/2` });
-              if (db[from].warns[w] >= 2) await sock.groupParticipantsUpdate(from, [w], "remove");
+              if (!groupData.warns[w]) groupData.warns[w] = 0;
+              groupData.warns[w]++;
+              try {
+                await sock.sendMessage(from, { text: `⚠️ Aviso: ${groupData.warns[w]}/2` });
+                if (groupData.warns[w] >= 2) {
+                  await sock.groupParticipantsUpdate(from, [w], "remove");
+                  delete groupData.warns[w];
+                }
+              } catch (error) {
+                console.error(`Erro ao avisar: ${error.message}`);
+              }
               saveDB();
             }
             break;
           case "resetwarn":
-            db[from].warns = {};
+            groupData.warns = {};
             saveDB();
             await sock.sendMessage(from, { text: "✅ Avisos resetados!" });
             break;
         }
-      } catch (error) {}
+      } catch (error) {
+        console.error(`❌ Erro ao processar comando: ${error.message}`);
+      }
     });
 
     // 🔥 DIVULGAÇÃO
     setInterval(async () => {
       if (!db.divulgacao) return;
-      for (let group in db) {
-        if (group.endsWith("@g.us")) {
-          try {
-            await sock.sendMessage(group, { text: db.divulgacao });
-          } catch (error) {}
+      
+      const grupos = Object.keys(db.grupos).filter(g => g.endsWith("@g.us"));
+      if (grupos.length === 0) return;
+      
+      console.log(`📢 Enviando divulgação para ${grupos.length} grupo(s)...`);
+      
+      for (const group of grupos) {
+        try {
+          await sock.sendMessage(group, { text: db.divulgacao });
+          console.log(`✅ Divulgação enviada para ${group}`);
+        } catch (error) {
+          console.error(`❌ Erro ao enviar divulgação: ${error.message}`);
         }
       }
     }, 40 * 60 * 1000);
