@@ -1,4 +1,4 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers } = require('@whiskeysockets/baileys');
 const fs = require('fs');
 const axios = require('axios');
 const pino = require('pino');
@@ -30,9 +30,15 @@ function askPhoneNumber() {
     console.log('╚══════════════════════════════════════════════════╝\n');
     
     rl.question('📱 Digite seu número WhatsApp (Ex: 5511999999999):\n> ', (answer) => {
-      const numero = answer.replace(/\D/g, '');
-      if (numero.length < 10) {
-        console.log('\n❌ Número inválido! Digite com código do país.\n');
+      let numero = answer.replace(/\D/g, '');
+      
+      // Garantir que começa com 55 (código do Brasil)
+      if (!numero.startsWith('55')) {
+        numero = '55' + numero;
+      }
+      
+      if (numero.length < 12) {
+        console.log('\n❌ Número inválido! Formato: 55[DDD][9]NÚMERO.\n');
         setTimeout(() => askPhoneNumber().then(resolve), 1000);
       } else {
         resolve(numero);
@@ -43,24 +49,29 @@ function askPhoneNumber() {
 
 async function startBot(phoneNumber) {
   try {
+    // Garantir formato com código do país
+    let formattedNumber = phoneNumber;
+    if (!formattedNumber.startsWith('55')) {
+      formattedNumber = '55' + formattedNumber;
+    }
+    
     console.clear();
-    console.log(`\n🔌 Conectando com: +${phoneNumber}\n`);
+    console.log(`\n🔌 Conectando com: +${formattedNumber}\n`);
     
     const { state, saveCreds } = await useMultiFileAuthState('./session');
 
     const sock = makeWASocket({
       auth: state,
       logger: logger,
-      browser: ["Ubuntu", "Chrome", "20.0.04"],
-      syncFullHistory: false,
-      shouldSyncHistoryMessage: () => false,
-      generateHighQualityLinkPreview: false,
+      browser: Browsers.ubuntu("Chrome"),
       printQRInTerminal: false,
     });
 
     sock.ev.on('creds.update', saveCreds);
     
     let qrDisplayed = false;
+    let reconnectAttempts = 0;
+    const maxReconnectAttempts = 5;
 
     sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
@@ -68,12 +79,13 @@ async function startBot(phoneNumber) {
       // 📱 Exibir QR code em TEXTO
       if (qr && !qrDisplayed) {
         qrDisplayed = true;
+        reconnectAttempts = 0;
         console.clear();
         console.log('\n╔══════════════════════════════════════════════════╗');
         console.log('║                                                  ║');
         console.log('║        📱 SCANEIE COM SEU CELULAR 📱            ║');
         console.log('║                                                  ║');
-        console.log('║  Número: +' + phoneNumber);
+        console.log('║  Número: +' + formattedNumber);
         console.log('║                                                  ║');
         console.log('║  Configurações > Dispositivos > Vincular         ║');
         console.log('║                                                  ║');
@@ -92,7 +104,7 @@ async function startBot(phoneNumber) {
         console.log('\n╔══════════════════════════════════════════════════╗');
         console.log('║         ✅ BOT CONECTADO COM SUCESSO! ✅        ║');
         console.log('╚══════════════════════════════════════════════════╝\n');
-        console.log(`👤 Conectado: +${phoneNumber}\n`);
+        console.log(`👤 Conectado: +${formattedNumber}\n`);
 
         // 📸 Atualizar foto
         (async () => {
@@ -114,9 +126,26 @@ async function startBot(phoneNumber) {
         const statusCode = lastDisconnect?.error?.output?.statusCode;
         console.log(`\n🔴 Desconectado (código: ${statusCode})\n`);
         
-        if (statusCode !== DisconnectReason.loggedOut && statusCode !== 403) {
+        // Erro 405 - Número bloqueado ou não elegível
+        if (statusCode === 405) {
+          reconnectAttempts++;
+          console.log(`⚠️  Erro 405: Número pode estar bloqueado (tentativa ${reconnectAttempts}/${maxReconnectAttempts})\n`);
+          
+          if (reconnectAttempts >= maxReconnectAttempts) {
+            console.log('❌ Número não elegível para WhatsApp Web.\n');
+            console.log('💡 Soluções:\n');
+            console.log('  1. Aguarde 24-48 horas e tente novamente\n');
+            console.log('  2. Use outro número com WhatsApp ativo\n');
+            console.log('  3. Verifique em: https://web.whatsapp.com\n');
+            process.exit(1);
+          }
+          
+          const delay = 10000 * reconnectAttempts;
+          console.log(`⏳ Reconectando em ${delay/1000}s...\n`);
+          setTimeout(() => { startBot(formattedNumber); }, delay);
+        } else if (statusCode !== DisconnectReason.loggedOut && statusCode !== 403) {
           console.log('⏳ Reconectando em 5s...\n');
-          setTimeout(() => { startBot(phoneNumber); }, 5000);
+          setTimeout(() => { startBot(formattedNumber); }, 5000);
         } else {
           console.log('❌ Sessão expirada. Reinicie o bot.\n');
           process.exit(1);
