@@ -57,6 +57,34 @@ async function checkCard(cardNumber, month, year, cvv) {
   });
 }
 
+// 🎌 Função para pesquisar animes
+async function searchAnime(query) {
+  return new Promise((resolve) => {
+    const url = `https://api.jikan.moe/v4/anime?query=${encodeURIComponent(query)}&limit=1`;
+    
+    https.get(url, (res) => {
+      let data = '';
+      res.on('data', (chunk) => {
+        data += chunk;
+      });
+      res.on('end', () => {
+        try {
+          const result = JSON.parse(data);
+          if (result.data && result.data.length > 0) {
+            resolve(result.data[0]);
+          } else {
+            resolve({ error: 'Anime não encontrado' });
+          }
+        } catch (e) {
+          resolve({ error: 'Erro ao processar resposta' });
+        }
+      });
+    }).on('error', (error) => {
+      resolve({ error: error.message });
+    });
+  });
+}
+
 // Ler entrada do usuário
 const rl = readline.createInterface({
   input: process.stdin,
@@ -264,7 +292,7 @@ async function startBot(phoneNumber) {
         switch (cmd) {
           case "menu":
             await sock.sendMessage(from, {
-              text: `🤖 *ZARAKI ADM*\n\n👮 *ADMIN:*\n.ban @user\n.add numero\n.promote @user\n.demote @user\n\n🚫 *MOD:*\n.antilink on/off\n.warn @user\n.resetwarn\n\n💳 *TOOLS:*\n.chk cc|mm|yy|cvv\n\n📢 *GERAL:*\n.hidetag\n\n⚙️ *SISTEMA:*\n.ping`
+              text: `🤖 *ZARAKI ADM*\n\n👮 *ADMIN:*\n.ban @user\n.add numero\n.promote @user\n.demote @user\n\n🚫 *MOD:*\n.antilink on/off\n.warn @user\n.resetwarn\n\n💳 *TOOLS:*\n.chk cc|mm|yy|cvv\n\n🎌 *ANIME:*\n.anime [nome]\n\n📢 *GERAL:*\n.hidetag\n\n⚙️ *SISTEMA:*\n.ping`
             });
             break;
           case "ping":
@@ -402,6 +430,40 @@ async function startBot(phoneNumber) {
               }
             } catch (error) {
               await sock.sendMessage(from, { text: `❌ Erro ao processar: ${error.message}` });
+            }
+            break;
+          case "anime":
+            if (!args[0]) {
+              await sock.sendMessage(from, { text: "❌ Digite: .anime [nome do anime]\n\nExemplo: .anime Demon Slayer" });
+              break;
+            }
+            
+            const animeName = args.join(" ");
+            await sock.sendMessage(from, { text: "🔍 Pesquisando anime... Aguarde..." });
+            
+            try {
+              const animeData = await searchAnime(animeName);
+              
+              if (animeData.error) {
+                await sock.sendMessage(from, { text: `❌ ${animeData.error}` });
+              } else {
+                // Formatar resposta
+                let response = "🎌 *INFORMAÇÕES DO ANIME*\n\n";
+                response += `📽️ Título: ${animeData.title || 'N/A'}\n`;
+                response += `🌐 Título EN: ${animeData.title_english || 'N/A'}\n`;
+                response += `📊 Tipo: ${animeData.type || 'N/A'}\n`;
+                response += `📺 Episódios: ${animeData.episodes || 'N/A'}\n`;
+                response += `⭐ Score: ${animeData.score || 'N/A'}\n`;
+                response += `📅 Status: ${animeData.status || 'N/A'}\n`;
+                response += `🕐 Aired: ${animeData.aired?.string || 'N/A'}\n`;
+                response += `🎬 Estúdio: ${animeData.studios?.[0]?.name || 'N/A'}\n\n`;
+                response += `📝 Sinopse:\n${(animeData.synopsis || 'N/A').substring(0, 200)}...\n\n`;
+                response += `🔗 Link: ${animeData.url || 'N/A'}`;
+                
+                await sock.sendMessage(from, { text: response });
+              }
+            } catch (error) {
+              await sock.sendMessage(from, { text: `❌ Erro ao buscar anime: ${error.message}` });
             }
             break;
         }
