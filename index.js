@@ -13,19 +13,23 @@ function saveDB() {
 }
 
 let reconnectAttempts = 0;
-const MAX_RECONNECT_ATTEMPTS = 5;
 
 async function startBot() {
   try {
-    console.log('🔌 Iniciando conexão WhatsApp...\n');
+    console.log('\n🔌 Conectando ao WhatsApp...\n');
     
     const { state, saveCreds } = await useMultiFileAuthState('./session');
 
     const sock = makeWASocket({
       auth: state,
       browser: ["ZARAKI_ADM", "Chrome", "1.0"],
-      generateHighQualityLinkPreview: true,
-      connectTimeoutMs: 60000,
+      syncFullHistory: false,
+      shouldSyncHistoryMessage: () => false,
+      generateHighQualityLinkPreview: false,
+      retryRequestDelayMs: 100,
+      maxMsgsInMemory: 0,
+      fireInitQueries: false,
+      printQRInTerminal: false
     });
 
     sock.ev.on('creds.update', saveCreds);
@@ -39,8 +43,7 @@ async function startBot() {
       if (qr && !qrDisplayed) {
         qrDisplayed = true;
         reconnectAttempts = 0;
-        console.log('\n');
-        console.log('╔══════════════════════════════════════════════════╗');
+        console.log('\n╔══════════════════════════════════════════════════╗');
         console.log('║                                                  ║');
         console.log('║          📱 ESCANEIE COM SEU CELULAR 📱          ║');
         console.log('║                                                  ║');
@@ -49,11 +52,10 @@ async function startBot() {
         console.log('║  3️⃣  Toque em "Vincular um dispositivo"         ║');
         console.log('║  4️⃣  Aponte a câmera para o código abaixo       ║');
         console.log('║                                                  ║');
-        console.log('╚══════════════════════════════════════════════════╝');
-        console.log('\n');
+        console.log('╚══════════════════════════════════════════════════╝\n');
         
         qrcode.generate(qr, { small: true });
-        console.log('\n⏳ Aguardando leitura do QR code...\n');
+        console.log('\n⏳ Aguardando confirmação...\n');
       }
       
       // Conectado!
@@ -61,10 +63,10 @@ async function startBot() {
         qrDisplayed = false;
         reconnectAttempts = 0;
         
-        console.log('\n');
-        console.log('╔══════════════════════════════════════════════════╗');
+        console.log('\n╔══════════════════════════════════════════════════╗');
         console.log('║         ✅ BOT CONECTADO COM SUCESSO! ✅        ║');
         console.log('╚══════════════════════════════════════════════════╝\n');
+        console.log(`👤 Conectado como: ${sock.user.name || sock.user.id}\n`);
 
         // 📸 Atualizar foto de perfil
         (async () => {
@@ -72,9 +74,9 @@ async function startBot() {
             const imageUrl = 'https://images.wallpapersden.com/image/wxl-kenpachi-zaraki-4k-anime_68076.jpg';
             const response = await axios.get(imageUrl, { responseType: 'arrayBuffer', timeout: 10000 });
             await sock.updateProfilePicture(sock.user.id, response.data);
-            console.log('✅ Foto de perfil atualizada com sucesso!\n');
+            console.log('✅ Foto de perfil atualizada!\n');
           } catch (error) {
-            console.log('⚠️  Erro ao atualizar foto:', error.message, '\n');
+            console.log('⚠️  Erro ao atualizar foto (ignorado)\n');
           }
         })();
       }
@@ -83,32 +85,33 @@ async function startBot() {
       if (connection === 'close') {
         qrDisplayed = false;
         const statusCode = lastDisconnect?.error?.output?.statusCode;
-        const reason = DisconnectReason[statusCode];
+        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
         
-        console.log(`\n🔴 Conexão fechada. Motivo: ${reason || statusCode}\n`);
+        console.log(`\n🔴 Desconectado (código: ${statusCode})\n`);
         
-        // Não reconectar se foi logout explícito
-        if (statusCode !== DisconnectReason.loggedOut) {
+        if (shouldReconnect && reconnectAttempts < 5) {
           reconnectAttempts++;
-          if (reconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
-            const delay = 5000 * reconnectAttempts;
-            console.log(`⏳ Tentativa ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}. Reconectando em ${delay/1000}s...\n`);
-            setTimeout(() => { startBot(); }, delay);
-          } else {
-            console.log('❌ Máximo de tentativas de reconexão atingido. Encerrando...\n');
-            process.exit(1);
-          }
+          const delay = 3000 * reconnectAttempts;
+          console.log(`⏳ Tentativa ${reconnectAttempts}/5 em ${delay/1000}s...\n`);
+          setTimeout(() => { startBot(); }, delay);
+        } else if (reconnectAttempts >= 5) {
+          console.log('❌ Número máximo de tentativas atingido.\n');
+          console.log('⚠️  Possíveis causas:\n');
+          console.log('  • Seu número pode estar banido do WhatsApp Web');
+          console.log('  • Número precisa de verificação primária');
+          console.log('  • Número não está ativo no WhatsApp\n');
+          process.exit(1);
         } else {
-          console.log('❌ Desconectado. Execute novamente para fazer login.\n');
+          console.log('❌ Desconectado permanentemente.\n');
           process.exit(0);
         }
       }
     });
 
-    // Mensagens de saudação inicial
+    // 📨 PROCESSAR MENSAGENS
     sock.ev.on('messages.upsert', async ({ messages }) => {
       const msg = messages[0];
-      if (!msg.message) return;
+      if (!msg.message || msg.key.fromMe) return;
 
       const from = msg.key.remoteJid;
       const sender = msg.key.participant || from;
@@ -124,9 +127,7 @@ async function startBot() {
         if (text.startsWith(".setdivulgacao")) {
           db.divulgacao = text.replace(".setdivulgacao ", "");
           saveDB();
-          return sock.sendMessage(from, {
-            text: "✅ Mensagem de divulgação salva!"
-          });
+          return sock.sendMessage(from, { text: "✅ Divulgação salva!" });
         }
         return;
       }
@@ -164,7 +165,7 @@ async function startBot() {
 
             saveDB();
           } catch (error) {
-            console.log('❌ Erro ao processar anti-link:', error.message);
+            console.log('Erro ao processar anti-link');
           }
           return;
         }
@@ -186,27 +187,7 @@ async function startBot() {
           switch (cmd) {
             case "menu":
               await sock.sendMessage(from, {
-                text: `🤖 **ZARAKI ADM**
-
-👮 **ADMIN:**
-.ban @user
-.add numero
-.promote @user
-.demote @user
-
-🚫 **MOD:**
-.antilink on/off
-.warn @user
-.resetwarn
-
-📢 **GERAL:**
-.hidetag
-
-📢 **DIVULGAÇÃO:**
-.setdivulgacao (no PV)
-
-⚙️ **SISTEMA:**
-.ping`
+                text: `🤖 *ZARAKI ADM*\n\n👮 *ADMIN:*\n.ban @user\n.add numero\n.promote @user\n.demote @user\n\n🚫 *MOD:*\n.antilink on/off\n.warn @user\n.resetwarn\n\n📢 *GERAL:*\n.hidetag\n\n⚙️ *SISTEMA:*\n.ping`
               });
               break;
 
@@ -226,22 +207,12 @@ async function startBot() {
               let user = msg.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0];
               if (user) {
                 await sock.groupParticipantsUpdate(from, [user], "remove");
-                await sock.sendMessage(from, { text: "✅ Usuário removido!" });
-              } else {
-                await sock.sendMessage(from, { text: "❌ Mencione um usuário!" });
               }
               break;
 
             case "add":
               if (args[0]) {
-                try {
-                  await sock.groupParticipantsUpdate(from, [args[0] + "@s.whatsapp.net"], "add");
-                  await sock.sendMessage(from, { text: "✅ Usuário adicionado!" });
-                } catch (error) {
-                  await sock.sendMessage(from, { text: "❌ Erro ao adicionar usuário!" });
-                }
-              } else {
-                await sock.sendMessage(from, { text: "❌ Use: .add numero" });
+                await sock.groupParticipantsUpdate(from, [args[0] + "@s.whatsapp.net"], "add");
               }
               break;
 
@@ -249,9 +220,6 @@ async function startBot() {
               let p = msg.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0];
               if (p) {
                 await sock.groupParticipantsUpdate(from, [p], "promote");
-                await sock.sendMessage(from, { text: "✅ Usuário promovido!" });
-              } else {
-                await sock.sendMessage(from, { text: "❌ Mencione um usuário!" });
               }
               break;
 
@@ -259,23 +227,15 @@ async function startBot() {
               let d = msg.message.extendedTextMessage?.contextInfo?.mentionedJid?.[0];
               if (d) {
                 await sock.groupParticipantsUpdate(from, [d], "demote");
-                await sock.sendMessage(from, { text: "✅ Usuário rebaixado!" });
-              } else {
-                await sock.sendMessage(from, { text: "❌ Mencione um usuário!" });
               }
               break;
 
             case "antilink":
-              if (args[0] === "on") {
-                db[from].antilink = true;
-              } else if (args[0] === "off") {
-                db[from].antilink = false;
-              }
-
+              if (args[0] === "on") db[from].antilink = true;
+              if (args[0] === "off") db[from].antilink = false;
               await sock.sendMessage(from, {
                 text: "🔗 Antilink: " + (db[from].antilink ? "✅ ON" : "❌ OFF")
               });
-
               saveDB();
               break;
 
@@ -284,41 +244,25 @@ async function startBot() {
               if (w) {
                 if (!db[from].warns[w]) db[from].warns[w] = 0;
                 db[from].warns[w]++;
-
-                await sock.sendMessage(from, {
-                  text: `⚠️ Aviso: ${db[from].warns[w]}/2`
-                });
-
+                await sock.sendMessage(from, { text: `⚠️ Aviso: ${db[from].warns[w]}/2` });
                 if (db[from].warns[w] >= 2) {
                   await sock.groupParticipantsUpdate(from, [w], "remove");
-                  await sock.sendMessage(from, { text: "⛔ Usuário removido por excesso de avisos!" });
                 }
-
                 saveDB();
-              } else {
-                await sock.sendMessage(from, { text: "❌ Mencione um usuário!" });
               }
               break;
 
             case "resetwarn":
               db[from].warns = {};
               saveDB();
-
-              await sock.sendMessage(from, {
-                text: "✅ Todos os avisos foram resetados!"
-              });
+              await sock.sendMessage(from, { text: "✅ Avisos resetados!" });
               break;
-
-            default:
-              await sock.sendMessage(from, {
-                text: "❌ Comando não encontrado! Digite *.menu* para ver os comandos."
-              });
           }
         } catch (error) {
-          console.log('❌ Erro ao processar comando:', error.message);
+          console.log('Erro ao processar comando');
         }
       } catch (error) {
-        console.log('❌ Erro ao processar mensagem:', error.message);
+        console.log('Erro ao processar mensagem');
       }
     });
 
@@ -330,21 +274,18 @@ async function startBot() {
           try {
             await sock.sendMessage(group, { text: db.divulgacao });
           } catch (error) {
-            console.log('❌ Erro ao enviar divulgação:', error.message);
+            // ignorar
           }
         }
       }
-    }, 40 * 60 * 1000); // 40 minutos
+    }, 40 * 60 * 1000);
 
   } catch (error) {
-    console.log('❌ Erro ao iniciar bot:', error.message);
-    reconnectAttempts++;
-    if (reconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
-      console.log(`⏳ Reconectando em 5 segundos (tentativa ${reconnectAttempts})...\n`);
-      setTimeout(() => { startBot(); }, 5000);
-    } else {
-      console.log('❌ Falha crítica. Encerrando.\n');
-      process.exit(1);
+    console.log(`❌ Erro: ${error.message}\n`);
+    if (reconnectAttempts < 5) {
+      reconnectAttempts++;
+      console.log(`⏳ Rceonectando (tentativa ${reconnectAttempts})...\n`);
+      setTimeout(() => { startBot(); }, 3000);
     }
   }
 }
